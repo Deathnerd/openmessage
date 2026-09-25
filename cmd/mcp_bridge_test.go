@@ -95,6 +95,21 @@ func runBridgeForTest(t *testing.T, url, token, input string) map[string]map[str
 	return byID
 }
 
+// requireJSONRPCErrors asserts every request in bridgeTestSession got a
+// JSON-RPC error reply under its own id, with a message containing want.
+func requireJSONRPCErrors(t *testing.T, byID map[string]map[string]any, want string) {
+	t.Helper()
+	for _, id := range []string{"1", "2", `"call-3"`} {
+		errObj, ok := byID[id]["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("id %s: want a JSON-RPC error, got %v (all: %v)", id, byID[id], byID)
+		}
+		if msg, _ := errObj["message"].(string); !strings.Contains(msg, want) {
+			t.Fatalf("id %s: error message %q should contain %q", id, msg, want)
+		}
+	}
+}
+
 func TestMCPBridgeRelaysToolsOverStreamableHTTP(t *testing.T) {
 	url, protocolVersions := newBridgeTestServer(t)
 	byID := runBridgeForTest(t, url, bridgeTestToken, bridgeTestSession)
@@ -125,15 +140,7 @@ func TestMCPBridgeRelaysToolsOverStreamableHTTP(t *testing.T) {
 func TestMCPBridgeReportsAuthFailureAsJSONRPCError(t *testing.T) {
 	url, _ := newBridgeTestServer(t)
 	byID := runBridgeForTest(t, url, strings.Repeat("f", 64), bridgeTestSession)
-	for _, id := range []string{"1", "2", `"call-3"`} {
-		errObj, ok := byID[id]["error"].(map[string]any)
-		if !ok {
-			t.Fatalf("id %s: want a JSON-RPC error, got %v", id, byID[id])
-		}
-		if msg, _ := errObj["message"].(string); !strings.Contains(msg, "OpenMessage server") {
-			t.Fatalf("id %s: error message %q should name the OpenMessage server", id, msg)
-		}
-	}
+	requireJSONRPCErrors(t, byID, "HTTP 401")
 }
 
 func TestMCPBridgeReportsUnreachableServer(t *testing.T) {
@@ -172,9 +179,7 @@ func TestParseMCPBridgeArgs(t *testing.T) {
 	}
 }
 
-func TestMCPBridgeRewritesNonJSONRPCErrorBodies(t *testing.T) {
-	// An ingress/proxy error page: non-2xx with a JSON body that is not a
-	// JSON-RPC reply. mcp-go hands it back as a response with a null id.
+func TestMCPBridgeReportsNonJSONRPCErrorBodies(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
@@ -183,12 +188,5 @@ func TestMCPBridgeRewritesNonJSONRPCErrorBodies(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	byID := runBridgeForTest(t, proxy.URL+"/mcp", bridgeTestToken, bridgeTestSession)
-	for _, id := range []string{"1", "2", `"call-3"`} {
-		if _, ok := byID[id]["error"].(map[string]any); !ok {
-			t.Fatalf("id %s: want a JSON-RPC error carrying the request id, got %v (all: %v)", id, byID[id], byID)
-		}
-	}
-	if _, stray := byID["null"]; stray {
-		t.Fatalf("bridge wrote a reply with a null id: %v", byID["null"])
-	}
+	requireJSONRPCErrors(t, byID, "HTTP 502")
 }

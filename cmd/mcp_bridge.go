@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -57,7 +59,8 @@ func parseMCPBridgeArgs(args []string) (url, token string, err error) {
 // reaches EOF and in-flight requests have finished.
 func runMCPBridge(ctx context.Context, in io.Reader, out io.Writer, url, token string) error {
 	httpTransport, err := transport.NewStreamableHTTP(url,
-		transport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + token}))
+		transport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + token}),
+		transport.WithHTTPBasicClient(&http.Client{Transport: statusErrorTransport{http.DefaultTransport}}))
 	if err != nil {
 		return fmt.Errorf("create MCP transport: %w", err)
 	}
@@ -80,16 +83,10 @@ func runMCPBridge(ctx context.Context, in io.Reader, out io.Writer, url, token s
 
 	forward := func(req transport.JSONRPCRequest) *transport.JSONRPCResponse {
 		resp, err := httpTransport.SendRequest(ctx, req)
-		switch {
-		case err != nil:
+		if err != nil {
 			resp = transport.NewJSONRPCErrorResponse(req.ID, mcp.INTERNAL_ERROR,
 				fmt.Sprintf("OpenMessage server at %s: %v", url, err), nil)
-		case resp.Result == nil && resp.Error == nil:
-			// A non-2xx JSON body that is not a JSON-RPC reply (proxy or
-			// ingress error page) comes back as an empty response.
-			resp = transport.NewJSONRPCErrorResponse(req.ID, mcp.INTERNAL_ERROR,
-				fmt.Sprintf("OpenMessage server at %s returned a non-JSON-RPC reply", url), nil)
-		default:
+		} else {
 			// Error replies can carry a null id (e.g. a 400 before the
 			// server parsed the request); the host matches replies by id.
 			resp.JSONRPC, resp.ID = mcp.JSONRPC_VERSION, req.ID
@@ -146,4 +143,31 @@ func runMCPBridge(ctx context.Context, in io.Reader, out io.Writer, url, token s
 		return fmt.Errorf("read MCP host input: %w", err)
 	}
 	return nil
+}
+
+// statusErrorTransport turns a non-2xx response whose body is not a JSON-RPC
+// message (an auth failure, a proxy or ingress error page) into an error that
+// keeps the status and body. mcp-go would otherwise decode any JSON body into
+// an empty reply and drop the status.
+type statusErrorTransport struct{ base http.RoundTripper }
+
+func (t statusErrorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp.StatusCode < 300 {
+		return resp, err
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	var envelope struct {
+		JSONRPC *string `json:"jsonrpc"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.JSONRPC != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return resp, nil
+	}
+	text := strings.TrimSpace(string(body))
+	if len(text) > 200 {
+		text = text[:200] + "..."
+	}
+	return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, text)
 }

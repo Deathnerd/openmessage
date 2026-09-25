@@ -460,8 +460,6 @@ func TestLoadServeRemoteAccess(t *testing.T) {
 	if _, err := loadServeRemoteAccess(serveOptions{web: true, mcpSSE: true}); !errors.Is(err, errRemoteWebUI) {
 		t.Fatalf("with the web UI: error = %v, want errRemoteWebUI", err)
 	}
-	// stdio opens no listener (e.g. `kubectl exec ... serve --mcp-stdio` in a
-	// remote-mode pod), so remote mode does not apply and must not fail it.
 	if remote, err := loadServeRemoteAccess(serveOptions{mcpStdio: true}); err != nil || remote != nil {
 		t.Fatalf("stdio only: loadServeRemoteAccess() = %v, %v; want local, no error", remote, err)
 	}

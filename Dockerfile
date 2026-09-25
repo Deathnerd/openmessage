@@ -28,6 +28,9 @@ RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S openmessage && \
     adduser -S -G openmessage -h /home/openmessage openmessage && \
     mkdir -p /data && chown openmessage:openmessage /data
+# The process writes only to /data and /tmp, so the root filesystem can be
+# read-only. Kubernetes may override the user (runAsUser/fsGroup); the uid
+# here is kept stable for existing Docker volumes.
 USER openmessage
 WORKDIR /home/openmessage
 COPY --from=build /out/openmessage /usr/local/bin/openmessage
