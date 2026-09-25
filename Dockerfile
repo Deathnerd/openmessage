@@ -22,9 +22,12 @@ RUN CGO_ENABLED=0 go build \
       .
 
 FROM alpine:3.20
+# Fixed uid/gid 1000 so Kubernetes securityContext (runAsUser/fsGroup 1000)
+# and volume ownership line up. The root filesystem can be read-only: the
+# process writes only to /data and /tmp.
 RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -S openmessage && \
-    adduser -S -G openmessage -h /home/openmessage openmessage && \
+    addgroup -S -g 1000 openmessage && \
+    adduser -S -u 1000 -G openmessage -h /home/openmessage openmessage && \
     mkdir -p /data && chown openmessage:openmessage /data
 USER openmessage
 WORKDIR /home/openmessage
