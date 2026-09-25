@@ -71,14 +71,16 @@ func newSignalRunTmpDir() (string, func(), error) {
 // signalCLIEnv rebases the subprocess's temp space onto dir. TMPDIR covers
 // signal-cli itself plus anything it spawns; java.io.tmpdir (appended last
 // to SIGNAL_CLI_OPTS so it wins) covers JVMs that derive their temp dir from
-// the platform default instead of TMPDIR.
+// the platform default instead of TMPDIR. TMP/TEMP are Windows' equivalents
+// (matched case-insensitively, as Windows treats env names).
 func signalCLIEnv(base []string, dir string) []string {
 	javaOpt := "-Djava.io.tmpdir=" + dir
 	opts := javaOpt
-	env := make([]string, 0, len(base)+2)
+	env := make([]string, 0, len(base)+4)
 	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
 		switch {
-		case strings.HasPrefix(kv, "TMPDIR="):
+		case strings.HasPrefix(kv, "TMPDIR="), strings.EqualFold(key, "TMP"), strings.EqualFold(key, "TEMP"):
 			continue
 		case strings.HasPrefix(kv, "SIGNAL_CLI_OPTS="):
 			if existing := strings.TrimSpace(strings.TrimPrefix(kv, "SIGNAL_CLI_OPTS=")); existing != "" {
@@ -88,7 +90,7 @@ func signalCLIEnv(base []string, dir string) []string {
 		}
 		env = append(env, kv)
 	}
-	return append(env, "TMPDIR="+dir, "SIGNAL_CLI_OPTS="+opts)
+	return append(env, "TMPDIR="+dir, "TMP="+dir, "TEMP="+dir, "SIGNAL_CLI_OPTS="+opts)
 }
 
 func signalTmpSweepDisabled() bool {

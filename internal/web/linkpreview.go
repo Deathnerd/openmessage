@@ -41,7 +41,9 @@ type LinkPreviewImageFetcher func(ctx context.Context, rawURL string) ([]byte, s
 type linkPreviewCacheEntry struct {
 	preview   *LinkPreview
 	expiresAt time.Time
-	touchedAt time.Time
+	// touchSeq orders entries for LRU eviction; wall-clock timestamps tie on
+	// coarse clocks (Windows), which made eviction pick an arbitrary entry.
+	touchSeq uint64
 }
 
 type LinkPreviewService struct {
@@ -51,8 +53,9 @@ type LinkPreviewService struct {
 	maxEntries        int
 	allowPrivateHosts bool
 
-	mu    sync.Mutex
-	cache map[string]linkPreviewCacheEntry
+	mu       sync.Mutex
+	cache    map[string]linkPreviewCacheEntry
+	touchSeq uint64
 }
 
 func NewLinkPreviewService(logger zerolog.Logger) *LinkPreviewService {
@@ -263,7 +266,8 @@ func (s *LinkPreviewService) cached(rawURL string) *LinkPreview {
 		delete(s.cache, rawURL)
 		return nil
 	}
-	entry.touchedAt = time.Now()
+	s.touchSeq++
+	entry.touchSeq = s.touchSeq
 	s.cache[rawURL] = entry
 	return cloneLinkPreview(entry.preview)
 }
@@ -273,10 +277,11 @@ func (s *LinkPreviewService) store(rawURL string, preview *LinkPreview) {
 	defer s.mu.Unlock()
 	now := time.Now()
 	s.pruneExpiredLocked(now)
+	s.touchSeq++
 	s.cache[rawURL] = linkPreviewCacheEntry{
 		preview:   cloneLinkPreview(preview),
 		expiresAt: now.Add(s.ttl),
-		touchedAt: now,
+		touchSeq:  s.touchSeq,
 	}
 	s.evictIfNeededLocked()
 }
@@ -295,11 +300,11 @@ func (s *LinkPreviewService) evictIfNeededLocked() {
 	}
 	for len(s.cache) > s.maxEntries {
 		oldestURL := ""
-		var oldestTouched time.Time
+		var oldestSeq uint64
 		for rawURL, entry := range s.cache {
-			if oldestURL == "" || entry.touchedAt.Before(oldestTouched) {
+			if oldestURL == "" || entry.touchSeq < oldestSeq {
 				oldestURL = rawURL
-				oldestTouched = entry.touchedAt
+				oldestSeq = entry.touchSeq
 			}
 		}
 		if oldestURL == "" {

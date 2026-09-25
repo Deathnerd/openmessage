@@ -15,6 +15,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/bridge"
+	"github.com/maxghenis/openmessage/internal/fsretry"
 )
 
 const (
@@ -370,7 +371,7 @@ func (c *googleSupervisorControl) Stop(ctx context.Context) error {
 }
 
 func googleSessionFingerprint(sessionPath string) (string, error) {
-	data, err := os.ReadFile(sessionPath)
+	data, err := fsretry.ReadFile(sessionPath)
 	if err != nil {
 		return "", fmt.Errorf("read Google session fingerprint: %w", err)
 	}
