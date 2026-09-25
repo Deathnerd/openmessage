@@ -805,19 +805,23 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	return nil
 }
 
-// errRemoteNeedsMCPOnly rejects remote mode without --mcp-sse (nothing would
-// serve it) or with --web (the web UI's login only works on loopback).
-var errRemoteNeedsMCPOnly = errors.New("remote mode (OPENMESSAGES_ALLOWED_HOSTS) serves MCP only: run `serve --mcp-sse` without --web")
+// errRemoteWebUI rejects remote mode with --web: the web UI's login only
+// works on loopback.
+var errRemoteWebUI = errors.New("remote mode (OPENMESSAGES_ALLOWED_HOSTS) serves MCP only: run `serve --mcp-sse` without --web")
 
-// loadServeRemoteAccess reads remote mode from the environment and checks it
-// against the requested transports.
+// loadServeRemoteAccess reads remote mode from the environment when serve will
+// open an HTTP listener. A stdio-only serve (e.g. `kubectl exec ... serve
+// --mcp-stdio` in a remote-mode pod) listens nowhere, so it stays local.
 func loadServeRemoteAccess(opts serveOptions) (*web.RemoteAccess, error) {
+	if !opts.web && !opts.mcpSSE {
+		return nil, nil
+	}
 	remote, err := web.LoadRemoteAccess(os.Getenv)
 	if err != nil {
 		return nil, err
 	}
-	if remote != nil && (opts.web || !opts.mcpSSE) {
-		return nil, errRemoteNeedsMCPOnly
+	if remote != nil && opts.web {
+		return nil, errRemoteWebUI
 	}
 	return remote, nil
 }

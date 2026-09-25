@@ -1,6 +1,7 @@
 name: Container image
 
 # Publishes ghcr.io/<owner>/openmessage for the shared (remote mode) server.
+# The image keeps its own user; Kubernetes sets runAsUser/fsGroup (e.g. 1000).
 # Deployments pin the image by digest, printed in the job summary.
 on:
   push:

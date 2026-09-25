@@ -171,3 +171,24 @@ func TestParseMCPBridgeArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPBridgeRewritesNonJSONRPCErrorBodies(t *testing.T) {
+	// An ingress/proxy error page: non-2xx with a JSON body that is not a
+	// JSON-RPC reply. mcp-go hands it back as a response with a null id.
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"message":"bad gateway"}`))
+	}))
+	t.Cleanup(proxy.Close)
+
+	byID := runBridgeForTest(t, proxy.URL+"/mcp", bridgeTestToken, bridgeTestSession)
+	for _, id := range []string{"1", "2", `"call-3"`} {
+		if _, ok := byID[id]["error"].(map[string]any); !ok {
+			t.Fatalf("id %s: want a JSON-RPC error carrying the request id, got %v (all: %v)", id, byID[id], byID)
+		}
+	}
+	if _, stray := byID["null"]; stray {
+		t.Fatalf("bridge wrote a reply with a null id: %v", byID["null"])
+	}
+}

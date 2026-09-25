@@ -80,9 +80,19 @@ func runMCPBridge(ctx context.Context, in io.Reader, out io.Writer, url, token s
 
 	forward := func(req transport.JSONRPCRequest) *transport.JSONRPCResponse {
 		resp, err := httpTransport.SendRequest(ctx, req)
-		if err != nil {
+		switch {
+		case err != nil:
 			resp = transport.NewJSONRPCErrorResponse(req.ID, mcp.INTERNAL_ERROR,
 				fmt.Sprintf("OpenMessage server at %s: %v", url, err), nil)
+		case resp.Result == nil && resp.Error == nil:
+			// A non-2xx JSON body that is not a JSON-RPC reply (proxy or
+			// ingress error page) comes back as an empty response.
+			resp = transport.NewJSONRPCErrorResponse(req.ID, mcp.INTERNAL_ERROR,
+				fmt.Sprintf("OpenMessage server at %s returned a non-JSON-RPC reply", url), nil)
+		default:
+			// Error replies can carry a null id (e.g. a 400 before the
+			// server parsed the request); the host matches replies by id.
+			resp.JSONRPC, resp.ID = mcp.JSONRPC_VERSION, req.ID
 		}
 		write(resp)
 		return resp

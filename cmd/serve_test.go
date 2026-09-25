@@ -446,7 +446,7 @@ func TestConfigureServeEnvRestoresPreviousValue(t *testing.T) {
 	}
 }
 
-func TestLoadServeRemoteAccessRequiresMCPOnly(t *testing.T) {
+func TestLoadServeRemoteAccess(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
 		t.Fatal(err)
@@ -457,12 +457,12 @@ func TestLoadServeRemoteAccessRequiresMCPOnly(t *testing.T) {
 	if remote, err := loadServeRemoteAccess(serveOptions{mcpSSE: true}); err != nil || remote == nil {
 		t.Fatalf("--mcp-sse: loadServeRemoteAccess() = %v, %v; want remote mode", remote, err)
 	}
-	for name, opts := range map[string]serveOptions{
-		"with the web UI":   {web: true, mcpSSE: true},
-		"without --mcp-sse": {mcpStdio: true},
-	} {
-		if _, err := loadServeRemoteAccess(opts); !errors.Is(err, errRemoteNeedsMCPOnly) {
-			t.Fatalf("%s: error = %v, want errRemoteNeedsMCPOnly", name, err)
-		}
+	if _, err := loadServeRemoteAccess(serveOptions{web: true, mcpSSE: true}); !errors.Is(err, errRemoteWebUI) {
+		t.Fatalf("with the web UI: error = %v, want errRemoteWebUI", err)
+	}
+	// stdio opens no listener (e.g. `kubectl exec ... serve --mcp-stdio` in a
+	// remote-mode pod), so remote mode does not apply and must not fail it.
+	if remote, err := loadServeRemoteAccess(serveOptions{mcpStdio: true}); err != nil || remote != nil {
+		t.Fatalf("stdio only: loadServeRemoteAccess() = %v, %v; want local, no error", remote, err)
 	}
 }

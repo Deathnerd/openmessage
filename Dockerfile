@@ -8,6 +8,8 @@
 # Run:     docker run -p 7007:7007 -v openmessage-data:/data openmessage
 # Pair:    docker exec -it <container> openmessage pair
 # Connect: claude mcp add -s user --transport sse openmessage http://<host>:7007/mcp/sse
+# Shared server: set OPENMESSAGES_ALLOWED_HOSTS + OPENMESSAGES_CONTROL_TOKEN_FILE
+#   and run `serve --mcp-sse` (remote mode: bearer token required, MCP only).
 
 FROM golang:1.25-alpine AS build
 WORKDIR /src
@@ -22,12 +24,9 @@ RUN CGO_ENABLED=0 go build \
       .
 
 FROM alpine:3.20
-# Fixed uid/gid 1000 so Kubernetes securityContext (runAsUser/fsGroup 1000)
-# and volume ownership line up. The root filesystem can be read-only: the
-# process writes only to /data and /tmp.
 RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -S -g 1000 openmessage && \
-    adduser -S -u 1000 -G openmessage -h /home/openmessage openmessage && \
+    addgroup -S openmessage && \
+    adduser -S -G openmessage -h /home/openmessage openmessage && \
     mkdir -p /data && chown openmessage:openmessage /data
 USER openmessage
 WORKDIR /home/openmessage
