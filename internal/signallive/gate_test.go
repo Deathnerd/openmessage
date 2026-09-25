@@ -42,12 +42,10 @@ func (b *syncBuffer) String() string {
 }
 
 func TestSignalCLIVersionProbeUsesExactCommandAndPrivateTemp(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
-	stub := filepath.Join(t.TempDir(), "signal-cli-stub")
-	script := "#!/bin/sh\nprintf '%s|%s|%s' \"$1\" \"$TMPDIR\" \"$SIGNAL_CLI_OPTS\"\nmkdir -p \"$TMPDIR/libsignal-test\"\n"
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	setTestTempDir(t, t.TempDir())
+	stub := writeSignalCLIStub(t,
+		"#!/bin/sh\nprintf '%s|%s|%s' \"$1\" \"$TMPDIR\" \"$SIGNAL_CLI_OPTS\"\nmkdir -p \"$TMPDIR/libsignal-test\"\n",
+		"@echo off\r\n<nul set /p =\"%~1|%TMPDIR%|%SIGNAL_CLI_OPTS%\"\r\nmkdir \"%TMPDIR%\\libsignal-test\"\r\n")
 	t.Setenv("OPENMESSAGES_SIGNAL_CLI", stub)
 
 	output, err := probeSignalCLIVersion(context.Background())

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -142,7 +143,8 @@ func TestSaveSessionRewritesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat session: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
+	// Windows has no Unix mode bits to compare.
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0600 {
 		t.Fatalf("session permissions = %04o, want 0600", got)
 	}
 }

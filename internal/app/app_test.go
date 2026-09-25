@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -108,7 +109,8 @@ func TestNewEnforcesPrivateDataModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Stat(%s): %v", tc.path, err)
 		}
-		if got := info.Mode().Perm(); got != tc.want {
+		// Windows has no Unix mode bits to compare.
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != tc.want {
 			t.Errorf("%s mode = %04o, want %04o", tc.path, got, tc.want)
 		}
 	}

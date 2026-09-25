@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +24,12 @@ type ledgerRow struct {
 }
 
 func TestOpenInitializesBlankDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "store ? #.sqlite3")
+	name := "store ? #.sqlite3"
+	if runtime.GOOS == "windows" {
+		// "?" is illegal in Windows filenames; "%" still exercises URI escaping.
+		name = "store % #.sqlite3"
+	}
+	path := filepath.Join(t.TempDir(), name)
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open(): %v", err)
