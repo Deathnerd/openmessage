@@ -207,3 +207,20 @@ func TestRunSignalCLIConfinesTempAndCleansUp(t *testing.T) {
 		t.Fatalf("tmp root should be empty after run, has %d entries", len(entries))
 	}
 }
+
+func TestJavaTmpdirOptionQuotesWindowsPathsWithSpaces(t *testing.T) {
+	for _, tc := range []struct {
+		name, goos, dir, want string
+	}{
+		{"windows with space", "windows", `C:\Users\John Doe\Temp\run-1`, `-Djava.io.tmpdir="C:\Users\John Doe\Temp\run-1"`},
+		{"windows trailing backslash", "windows", `C:\Users\John Doe\Temp\`, `-Djava.io.tmpdir="C:\Users\John Doe\Temp"`},
+		{"windows without space", "windows", `C:\Users\wes\Temp\run-1`, `-Djava.io.tmpdir=C:\Users\wes\Temp\run-1`},
+		{"unix with space stays bare", "linux", "/tmp/my dir/run-1", "-Djava.io.tmpdir=/tmp/my dir/run-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := javaTmpdirOption(tc.goos, tc.dir); got != tc.want {
+				t.Fatalf("javaTmpdirOption(%q, %q) = %q, want %q", tc.goos, tc.dir, got, tc.want)
+			}
+		})
+	}
+}
