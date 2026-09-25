@@ -1,7 +1,6 @@
 package web
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -89,10 +88,6 @@ func (r *RemoteAccess) hostAllowed(hostport string) bool {
 }
 
 func (r *RemoteAccess) authorized(req *http.Request) bool {
-	scheme, token, found := strings.Cut(strings.TrimSpace(req.Header.Get("Authorization")), " ")
-	return found && strings.EqualFold(scheme, "Bearer") && secureEqual(strings.TrimSpace(token), r.token)
+	token, ok := bearerToken(req)
+	return ok && secureEqual(token, r.token)
 }
-
-// ErrRemoteWebUI is returned when remote mode is combined with the web UI,
-// whose browser login flow only works on loopback.
-var ErrRemoteWebUI = errors.New("remote mode serves MCP only; run `serve --mcp-sse` without --web")

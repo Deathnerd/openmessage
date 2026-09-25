@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +21,10 @@ import (
 
 const bridgeTestToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-func newBridgeTestServer(t *testing.T) string {
+// newBridgeTestServer serves a one-tool MCP server through the production
+// MCP handler behind remote-mode auth, and records the MCP-Protocol-Version
+// header of every request after the first.
+func newBridgeTestServer(t *testing.T) (url string, protocolVersions *[]string) {
 	t.Helper()
 	srv := mcpserver.NewMCPServer("bridge-test", "1.0.0")
 	srv.AddTool(mcp.NewTool("echo", mcp.WithString("text", mcp.Required())),
@@ -39,9 +44,24 @@ func newBridgeTestServer(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpSrv := httptest.NewServer(remote.Handler(mcpserver.NewStreamableHTTPServer(srv, mcpserver.WithEndpointPath("/mcp"))))
+	var (
+		mu       sync.Mutex
+		seen     int
+		versions []string
+	)
+	handler := remote.Handler(newMCPHTTPHandler(srv, ""))
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			mu.Lock()
+			if seen++; seen > 1 {
+				versions = append(versions, r.Header.Get("MCP-Protocol-Version"))
+			}
+			mu.Unlock()
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(httpSrv.Close)
-	return httpSrv.URL + "/mcp"
+	return httpSrv.URL + "/mcp", &versions
 }
 
 const bridgeTestSession = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
@@ -76,10 +96,21 @@ func runBridgeForTest(t *testing.T, url, token, input string) map[string]map[str
 }
 
 func TestMCPBridgeRelaysToolsOverStreamableHTTP(t *testing.T) {
-	byID := runBridgeForTest(t, newBridgeTestServer(t), bridgeTestToken, bridgeTestSession)
+	url, protocolVersions := newBridgeTestServer(t)
+	byID := runBridgeForTest(t, url, bridgeTestToken, bridgeTestSession)
 
-	if byID["1"]["result"] == nil {
+	initResult, _ := byID["1"]["result"].(map[string]any)
+	if initResult == nil {
 		t.Fatalf("initialize: no result: %v", byID["1"])
+	}
+	negotiated, _ := initResult["protocolVersion"].(string)
+	if len(*protocolVersions) == 0 {
+		t.Fatalf("no requests after initialize reached the server")
+	}
+	for _, got := range *protocolVersions {
+		if negotiated == "" || got != negotiated {
+			t.Fatalf("MCP-Protocol-Version after initialize = %q, want negotiated %q", got, negotiated)
+		}
 	}
 	tools, _ := byID["2"]["result"].(map[string]any)["tools"].([]any)
 	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "echo" {
@@ -92,7 +123,8 @@ func TestMCPBridgeRelaysToolsOverStreamableHTTP(t *testing.T) {
 }
 
 func TestMCPBridgeReportsAuthFailureAsJSONRPCError(t *testing.T) {
-	byID := runBridgeForTest(t, newBridgeTestServer(t), strings.Repeat("f", 64), bridgeTestSession)
+	url, _ := newBridgeTestServer(t)
+	byID := runBridgeForTest(t, url, strings.Repeat("f", 64), bridgeTestSession)
 	for _, id := range []string{"1", "2", `"call-3"`} {
 		errObj, ok := byID[id]["error"].(map[string]any)
 		if !ok {

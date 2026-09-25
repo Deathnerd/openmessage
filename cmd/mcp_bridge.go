@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -33,27 +34,16 @@ func RunMCPBridge(args ...string) error {
 }
 
 func parseMCPBridgeArgs(args []string) (url, token string, err error) {
-	var tokenFile string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--url", "--token-file":
-			if i+1 >= len(args) {
-				return "", "", fmt.Errorf("%s requires a value", args[i])
-			}
-			if args[i] == "--url" {
-				url = args[i+1]
-			} else {
-				tokenFile = args[i+1]
-			}
-			i++
-		default:
-			return "", "", fmt.Errorf("unknown mcp-bridge option %s", args[i])
-		}
+	fs := flag.NewFlagSet("mcp-bridge", flag.ContinueOnError)
+	fs.StringVar(&url, "url", "", "remote OpenMessage MCP endpoint, e.g. https://host/mcp")
+	tokenFile := fs.String("token-file", "", "file holding the bearer token")
+	if err := fs.Parse(args); err != nil {
+		return "", "", err
 	}
-	if url == "" || tokenFile == "" {
+	if url == "" || *tokenFile == "" || fs.NArg() != 0 {
 		return "", "", errors.New("usage: openmessage mcp-bridge --url <https://host/mcp> --token-file <path>")
 	}
-	raw, err := os.ReadFile(tokenFile)
+	raw, err := os.ReadFile(*tokenFile)
 	if err != nil {
 		return "", "", fmt.Errorf("read token file: %w", err)
 	}
@@ -88,19 +78,14 @@ func runMCPBridge(ctx context.Context, in io.Reader, out io.Writer, url, token s
 	}
 	httpTransport.SetNotificationHandler(func(n mcp.JSONRPCNotification) { write(n) })
 
-	serverError := func(err error) *mcp.JSONRPCErrorDetails {
-		return &mcp.JSONRPCErrorDetails{
-			Code:    mcp.INTERNAL_ERROR,
-			Message: fmt.Sprintf("OpenMessage server at %s: %v", url, err),
-		}
-	}
-	forward := func(req transport.JSONRPCRequest) {
+	forward := func(req transport.JSONRPCRequest) *transport.JSONRPCResponse {
 		resp, err := httpTransport.SendRequest(ctx, req)
 		if err != nil {
-			write(transport.JSONRPCResponse{JSONRPC: mcp.JSONRPC_VERSION, ID: req.ID, Error: serverError(err)})
-			return
+			resp = transport.NewJSONRPCErrorResponse(req.ID, mcp.INTERNAL_ERROR,
+				fmt.Sprintf("OpenMessage server at %s: %v", url, err), nil)
 		}
 		write(resp)
+		return resp
 	}
 
 	var inFlight sync.WaitGroup
@@ -127,11 +112,17 @@ func runMCPBridge(ctx context.Context, in io.Reader, out io.Writer, url, token s
 		if len(msg.Params) > 0 {
 			req.Params = msg.Params
 		}
-		// initialize establishes the session every later request needs, so
-		// it runs inline; everything else runs concurrently so a slow tool
-		// call does not block the host's other requests.
+		// initialize establishes the session and protocol version every later
+		// request needs, so it runs inline (doing what client.Initialize does
+		// for the transport); everything else runs concurrently so a slow
+		// tool call does not block the host's other requests.
 		if msg.Method == string(mcp.MethodInitialize) {
-			forward(req)
+			if resp := forward(req); resp.Error == nil {
+				var result mcp.InitializeResult
+				if json.Unmarshal(resp.Result, &result) == nil && result.ProtocolVersion != "" {
+					httpTransport.SetProtocolVersion(result.ProtocolVersion)
+				}
+			}
 			continue
 		}
 		inFlight.Add(1)

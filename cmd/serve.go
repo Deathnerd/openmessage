@@ -622,7 +622,14 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 
 	var mcpHTTPHandler http.Handler
 	if opts.mcpSSE {
-		mcpHTTPHandler = newMCPHTTPHandler(mcpSrv, baseURL, remote != nil)
+		// Behind a remote-mode ingress the listen address is not the URL
+		// clients use; an empty base URL makes mcp-go advertise the legacy
+		// SSE message endpoint as a relative path.
+		mcpBaseURL := baseURL
+		if remote != nil {
+			mcpBaseURL = ""
+		}
+		mcpHTTPHandler = newMCPHTTPHandler(mcpSrv, mcpBaseURL)
 	}
 
 	googleStatus := func() any {
@@ -751,7 +758,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				logger.Info().Str("addr", listenAddr).Msg("Web UI available at " + baseURL)
 				fmt.Fprintf(os.Stderr, "Open this single-use URL to authorize the web UI (it redirects without exposing the control token):\n%s\n", controlAuth.BootstrapURL(baseURL))
 			}
-			if opts.mcpSSE && remote != nil {
+			if remote != nil {
 				logger.Info().Str("addr", listenAddr).Msg("MCP available at /mcp (remote mode: bearer token required)")
 			} else if opts.mcpSSE {
 				logger.Info().Str("addr", listenAddr).Msg("MCP SSE available at " + baseURL + "/mcp/sse")
@@ -798,15 +805,19 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	return nil
 }
 
-// loadServeRemoteAccess reads remote mode from the environment and rejects
-// combining it with the web UI, whose login flow only works on loopback.
+// errRemoteNeedsMCPOnly rejects remote mode without --mcp-sse (nothing would
+// serve it) or with --web (the web UI's login only works on loopback).
+var errRemoteNeedsMCPOnly = errors.New("remote mode (OPENMESSAGES_ALLOWED_HOSTS) serves MCP only: run `serve --mcp-sse` without --web")
+
+// loadServeRemoteAccess reads remote mode from the environment and checks it
+// against the requested transports.
 func loadServeRemoteAccess(opts serveOptions) (*web.RemoteAccess, error) {
 	remote, err := web.LoadRemoteAccess(os.Getenv)
 	if err != nil {
 		return nil, err
 	}
-	if remote != nil && opts.web {
-		return nil, web.ErrRemoteWebUI
+	if remote != nil && (opts.web || !opts.mcpSSE) {
+		return nil, errRemoteNeedsMCPOnly
 	}
 	return remote, nil
 }
@@ -941,16 +952,11 @@ func initializeWhatsAppForServe(
 	return whatsappBridge, true
 }
 
-// newMCPHTTPHandler serves MCP over streamable HTTP at /mcp and legacy SSE
-// under /mcp/. Behind a remote-mode ingress the listen address is not the
-// URL clients use, so the SSE message endpoint is advertised as a relative
-// path instead of an absolute baseURL.
-func newMCPHTTPHandler(mcpSrv *mcpserver.MCPServer, baseURL string, relativeSSEEndpoint bool) http.Handler {
+func newMCPHTTPHandler(mcpSrv *mcpserver.MCPServer, baseURL string) http.Handler {
 	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath("/mcp"))
 	sseSrv := mcpserver.NewSSEServer(mcpSrv,
 		mcpserver.WithBaseURL(baseURL),
 		mcpserver.WithStaticBasePath("/mcp"),
-		mcpserver.WithUseFullURLForMessageEndpoint(!relativeSSEEndpoint),
 	)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", streamableSrv)
