@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -550,6 +551,10 @@ func requireStagedDirectory(path string) error {
 }
 
 func syncMigrationDirectory(path string) error {
+	// Windows cannot fsync a directory handle; NTFS journals the rename itself.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	directory, err := os.Open(path)
 	if err != nil {
 		return err

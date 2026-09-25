@@ -126,8 +126,8 @@ func Version() string {
 }
 
 func RunServe(logger zerolog.Logger, args ...string) error {
-	previousUmask := syscall.Umask(0o077)
-	defer syscall.Umask(previousUmask)
+	restoreUmask := setPrivateUmask()
+	defer restoreUmask()
 
 	opts, err := parseServeOptions(args)
 	if err != nil {

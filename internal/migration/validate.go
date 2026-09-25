@@ -56,7 +56,8 @@ func checkpointAndSyncSQLite(ctx context.Context, path string) error {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return err
 	}
-	file, err := os.Open(path)
+	// Windows only flushes through a writable handle.
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}

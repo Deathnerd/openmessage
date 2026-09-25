@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -612,8 +613,8 @@ func acquireInstanceLock(path string, record instanceLockRecord) (*instanceLock,
 	if err := os.Chmod(path, 0o600); err != nil {
 		return closeWithError(err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+	if err := lockFileExclusive(file); err != nil {
+		if isLockHeldError(err) {
 			return closeWithError(fmt.Errorf("%w: %s", errInstanceLockHeld, path))
 		}
 		return closeWithError(err)
@@ -621,24 +622,24 @@ func acquireInstanceLock(path string, record instanceLockRecord) (*instanceLock,
 
 	payload, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	payload = append(payload, '\n')
 	if err := file.Truncate(0); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	if _, err := file.Write(payload); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	if err := file.Sync(); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	return &instanceLock{file: file}, nil
@@ -648,23 +649,10 @@ func (l *instanceLock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockFile(l.file)
 	closeErr := l.file.Close()
 	l.file = nil
 	return errors.Join(unlockErr, closeErr)
-}
-
-func filesystemAvailableBytes(path string) (uint64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	blockSize := uint64(stat.Bsize)
-	availableBlocks := uint64(stat.Bavail)
-	if blockSize == 0 || availableBlocks > math.MaxUint64/blockSize {
-		return 0, fmt.Errorf("filesystem free-space value overflows uint64")
-	}
-	return availableBlocks * blockSize, nil
 }
 
 func vacuumInto(ctx context.Context, sourcePath, destinationPath string) error {
@@ -684,7 +672,12 @@ func vacuumInto(ctx context.Context, sourcePath, destinationPath string) error {
 }
 
 func sqliteReadOnlyDSN(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		// Windows drive paths need file:///C:/... for SQLite to accept the URI.
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed, RawQuery: "mode=ro"}).String()
 }
 
 func sqliteQuickCheck(path string) (string, error) {
@@ -989,6 +982,10 @@ func writeManifestAtomically(path string, manifest backupManifest) (returnErr er
 		return err
 	}
 	renamed = true
+	// Windows cannot fsync a directory handle; NTFS journals the rename itself.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	directory, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		_ = os.Remove(path)
