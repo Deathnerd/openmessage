@@ -133,6 +133,10 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	if err != nil {
 		return err
 	}
+	remote, err := loadServeRemoteAccess(opts)
+	if err != nil {
+		return err
+	}
 	restoreEnv := configureServeEnv(opts)
 	defer restoreEnv()
 
@@ -618,7 +622,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 
 	var mcpHTTPHandler http.Handler
 	if opts.mcpSSE {
-		mcpHTTPHandler = newMCPHTTPHandler(mcpSrv, baseURL)
+		mcpHTTPHandler = newMCPHTTPHandler(mcpSrv, baseURL, remote != nil)
 	}
 
 	googleStatus := func() any {
@@ -669,9 +673,14 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 
 	httpEnabled := opts.web || opts.mcpSSE
 	if httpEnabled {
-		controlAuth, err := web.NewControlAuth(a.DataDir, logger)
-		if err != nil {
-			return fmt.Errorf("initialize local control authentication: %w", err)
+		// Remote mode has its own required-token auth; the local control
+		// token (and its browser bootstrap) only exists in local mode.
+		var controlAuth *web.ControlAuth
+		if remote == nil {
+			controlAuth, err = web.NewControlAuth(a.DataDir, logger)
+			if err != nil {
+				return fmt.Errorf("initialize local control authentication: %w", err)
+			}
 		}
 		httpHandler := http.Handler(nil)
 		if opts.web {
@@ -721,6 +730,8 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				BackfillPhone:         a.BackfillConversationByPhone,
 				SyncGoogleContacts:    a.SyncGoogleContacts,
 			})
+		} else if remote != nil {
+			httpHandler = remote.Handler(mcpHTTPHandler)
 		} else {
 			httpHandler = web.ProtectLocalControl(controlAuth.Handler(mcpHTTPHandler))
 		}
@@ -740,7 +751,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				logger.Info().Str("addr", listenAddr).Msg("Web UI available at " + baseURL)
 				fmt.Fprintf(os.Stderr, "Open this single-use URL to authorize the web UI (it redirects without exposing the control token):\n%s\n", controlAuth.BootstrapURL(baseURL))
 			}
-			if opts.mcpSSE {
+			if opts.mcpSSE && remote != nil {
+				logger.Info().Str("addr", listenAddr).Msg("MCP available at /mcp (remote mode: bearer token required)")
+			} else if opts.mcpSSE {
 				logger.Info().Str("addr", listenAddr).Msg("MCP SSE available at " + baseURL + "/mcp/sse")
 			}
 			if err := srv.Serve(ln); err != nil {
@@ -783,6 +796,19 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	}
 	logger.Info().Msg("Shutting down")
 	return nil
+}
+
+// loadServeRemoteAccess reads remote mode from the environment and rejects
+// combining it with the web UI, whose login flow only works on loopback.
+func loadServeRemoteAccess(opts serveOptions) (*web.RemoteAccess, error) {
+	remote, err := web.LoadRemoteAccess(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	if remote != nil && opts.web {
+		return nil, web.ErrRemoteWebUI
+	}
+	return remote, nil
 }
 
 // clientProbeTimeout bounds the startup daemon probe in MCP client mode so a
@@ -915,11 +941,16 @@ func initializeWhatsAppForServe(
 	return whatsappBridge, true
 }
 
-func newMCPHTTPHandler(mcpSrv *mcpserver.MCPServer, baseURL string) http.Handler {
+// newMCPHTTPHandler serves MCP over streamable HTTP at /mcp and legacy SSE
+// under /mcp/. Behind a remote-mode ingress the listen address is not the
+// URL clients use, so the SSE message endpoint is advertised as a relative
+// path instead of an absolute baseURL.
+func newMCPHTTPHandler(mcpSrv *mcpserver.MCPServer, baseURL string, relativeSSEEndpoint bool) http.Handler {
 	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath("/mcp"))
 	sseSrv := mcpserver.NewSSEServer(mcpSrv,
 		mcpserver.WithBaseURL(baseURL),
 		mcpserver.WithStaticBasePath("/mcp"),
+		mcpserver.WithUseFullURLForMessageEndpoint(!relativeSSEEndpoint),
 	)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", streamableSrv)

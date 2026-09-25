@@ -18,6 +18,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 
+	"github.com/maxghenis/openmessage/internal/web"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
@@ -214,7 +215,7 @@ func TestHTTPServerSurvivesIndependently(t *testing.T) {
 
 func TestMCPHTTPHandlerServesCodexAndClaudeTransports(t *testing.T) {
 	mcpSrv := mcpserver.NewMCPServer("test-openmessage", "test", mcpserver.WithToolCapabilities(true))
-	srv := httptest.NewServer(newMCPHTTPHandler(mcpSrv, "http://example.test"))
+	srv := httptest.NewServer(newMCPHTTPHandler(mcpSrv, "http://example.test", false))
 	defer srv.Close()
 
 	initBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`)
@@ -444,4 +445,34 @@ func TestConfigureServeEnvRestoresPreviousValue(t *testing.T) {
 	if got := os.Getenv("OPENMESSAGES_DEMO"); got != "existing" {
 		t.Fatalf("OPENMESSAGES_DEMO=%q, want existing after restore", got)
 	}
+}
+
+func TestLoadServeRemoteAccess(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("local mode when unset", func(t *testing.T) {
+		t.Setenv("OPENMESSAGES_ALLOWED_HOSTS", "")
+		remote, err := loadServeRemoteAccess(serveOptions{web: true})
+		if err != nil || remote != nil {
+			t.Fatalf("loadServeRemoteAccess() = %v, %v; want local mode", remote, err)
+		}
+	})
+	t.Run("remote MCP only", func(t *testing.T) {
+		t.Setenv("OPENMESSAGES_ALLOWED_HOSTS", "om.example")
+		t.Setenv("OPENMESSAGES_CONTROL_TOKEN_FILE", tokenPath)
+		remote, err := loadServeRemoteAccess(serveOptions{mcpSSE: true})
+		if err != nil || remote == nil {
+			t.Fatalf("loadServeRemoteAccess() = %v, %v; want remote mode", remote, err)
+		}
+	})
+	t.Run("remote rejects the web UI", func(t *testing.T) {
+		t.Setenv("OPENMESSAGES_ALLOWED_HOSTS", "om.example")
+		t.Setenv("OPENMESSAGES_CONTROL_TOKEN_FILE", tokenPath)
+		if _, err := loadServeRemoteAccess(serveOptions{web: true, mcpSSE: true}); !errors.Is(err, web.ErrRemoteWebUI) {
+			t.Fatalf("loadServeRemoteAccess(web) error = %v, want ErrRemoteWebUI", err)
+		}
+	})
 }
