@@ -79,12 +79,12 @@ func signalCLIEnv(base []string, dir string) []string {
 	opts := javaOpt
 	env := make([]string, 0, len(base)+4)
 	for _, kv := range base {
-		key, _, _ := strings.Cut(kv, "=")
+		key, value, _ := strings.Cut(kv, "=")
 		switch {
-		case strings.HasPrefix(kv, "TMPDIR="), strings.EqualFold(key, "TMP"), strings.EqualFold(key, "TEMP"):
+		case key == "TMPDIR", strings.EqualFold(key, "TMP"), strings.EqualFold(key, "TEMP"):
 			continue
-		case strings.HasPrefix(kv, "SIGNAL_CLI_OPTS="):
-			if existing := strings.TrimSpace(strings.TrimPrefix(kv, "SIGNAL_CLI_OPTS=")); existing != "" {
+		case key == "SIGNAL_CLI_OPTS":
+			if existing := strings.TrimSpace(value); existing != "" {
 				opts = existing + " " + javaOpt
 			}
 			continue

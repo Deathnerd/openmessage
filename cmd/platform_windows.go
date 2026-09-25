@@ -36,6 +36,12 @@ func isLockHeldError(err error) bool {
 	return errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }
 
+// syncDirectory is a no-op: Windows cannot fsync a directory handle, and NTFS
+// journals renames itself.
+func syncDirectory(string) error {
+	return nil
+}
+
 func filesystemAvailableBytes(path string) (uint64, error) {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {

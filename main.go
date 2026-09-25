@@ -52,7 +52,7 @@ func main() {
 	case "serve":
 		err = cmd.RunServe(logger, os.Args[2:]...)
 	case "service":
-		err = cmd.RunService(logger, os.Args[2:]...)
+		err = cmd.RunService(os.Args[2:]...)
 	case "demo":
 		err = cmd.RunDemo(logger)
 	case "backup":

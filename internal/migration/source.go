@@ -9,13 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 )
 
 type legacyConversation struct {
@@ -588,14 +589,7 @@ func fileSHA256(path string) (string, error) {
 }
 
 func readOnlySQLiteDSN(path string) string {
-	slashed := filepath.ToSlash(path)
-	if !strings.HasPrefix(slashed, "/") {
-		// Windows drive paths need file:///C:/... for SQLite to accept the URI.
-		slashed = "/" + slashed
-	}
-	return (&url.URL{
-		Scheme: "file", Path: slashed, RawQuery: "mode=ro",
-	}).String()
+	return sqlite.FileURI(path, "mode=ro")
 }
 
 func stageLegacySourceSnapshot(

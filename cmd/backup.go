@@ -13,10 +13,8 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -26,6 +24,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/maxghenis/openmessage/internal/app"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 
 	_ "modernc.org/sqlite"
 )
@@ -672,12 +671,7 @@ func vacuumInto(ctx context.Context, sourcePath, destinationPath string) error {
 }
 
 func sqliteReadOnlyDSN(path string) string {
-	slashed := filepath.ToSlash(path)
-	if !strings.HasPrefix(slashed, "/") {
-		// Windows drive paths need file:///C:/... for SQLite to accept the URI.
-		slashed = "/" + slashed
-	}
-	return (&url.URL{Scheme: "file", Path: slashed, RawQuery: "mode=ro"}).String()
+	return sqlite.FileURI(path, "mode=ro")
 }
 
 func sqliteQuickCheck(path string) (string, error) {
@@ -982,18 +976,7 @@ func writeManifestAtomically(path string, manifest backupManifest) (returnErr er
 		return err
 	}
 	renamed = true
-	// Windows cannot fsync a directory handle; NTFS journals the rename itself.
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		_ = os.Remove(path)
-		return err
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	if err := errors.Join(syncErr, closeErr); err != nil {
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
 		_ = os.Remove(path)
 		return err
 	}

@@ -15,7 +15,10 @@ import (
 )
 
 const (
-	maxAttempts  = 50
+	// retryBudget bounds the total wait. Conflicts usually clear within
+	// milliseconds, but concurrent renames over one target can queue for
+	// hundreds; 250ms measurably flaked under TestSaveSessionRewritesAtomically.
+	retryBudget  = time.Second
 	initialDelay = time.Millisecond
 	maxDelay     = 20 * time.Millisecond
 )
@@ -37,14 +40,14 @@ func ReadFile(path string) ([]byte, error) {
 }
 
 func retry(op func() error) error {
+	deadline := time.Now().Add(retryBudget)
 	delay := initialDelay
-	var err error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err = op(); err == nil || !isTransientSharingError(err) {
+	for {
+		err := op()
+		if err == nil || !isTransientSharingError(err) || time.Now().Add(delay).After(deadline) {
 			return err
 		}
 		time.Sleep(delay)
 		delay = min(delay*2, maxDelay)
 	}
-	return err
 }

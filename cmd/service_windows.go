@@ -27,7 +27,7 @@ const serviceStopTimeout = 10 * time.Second
 // RunService runs `serve` under the Windows Service Control Manager. It is
 // the service's binPath entry point (`openmessage.exe service [serve flags]`)
 // and refuses to run from a console, where `serve` is the right command.
-func RunService(_ zerolog.Logger, args ...string) error {
+func RunService(args ...string) error {
 	isService, err := svc.IsWindowsService()
 	if err != nil {
 		return fmt.Errorf("detect service context: %w", err)
@@ -35,7 +35,7 @@ func RunService(_ zerolog.Logger, args ...string) error {
 	if !isService {
 		return errors.New("`service` is started by the Windows Service Control Manager; run `openmessage serve` for a foreground daemon")
 	}
-	logFile, _, err := openServiceLog()
+	logFile, err := openServiceLog()
 	if err != nil {
 		return err
 	}
@@ -79,11 +79,7 @@ func (s *daemonService) Execute(_ []string, requests <-chan svc.ChangeRequest, s
 		case err := <-done:
 			// serve exited without being asked to. A non-zero exit code lets
 			// the SCM recovery actions (restart on failure) kick in.
-			if err != nil {
-				s.logger.Error().Err(err).Msg("serve exited with an error")
-				return false, 1
-			}
-			s.logger.Warn().Msg("serve exited unexpectedly")
+			s.logger.Error().Err(err).Msg("serve exited unexpectedly")
 			return false, 1
 		case request := <-requests:
 			switch request.Cmd {

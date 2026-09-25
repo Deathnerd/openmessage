@@ -34,7 +34,7 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 	_ "modernc.org/sqlite"
 
-	"github.com/maxghenis/openmessage/internal/fsretry"
+	"github.com/maxghenis/openmessage/internal/client"
 )
 
 type requiredCookie struct {
@@ -318,7 +318,7 @@ func readCookieRows(dbPath string) ([]cookieRow, error) {
 // UpdateSessionCookies rewrites auth_data.cookies in session.json atomically,
 // preserving every other field.
 func UpdateSessionCookies(sessionPath string, cookies map[string]string) error {
-	raw, err := fsretry.ReadFile(sessionPath)
+	raw, err := client.ReadSessionFile(sessionPath)
 	if err != nil {
 		return fmt.Errorf("read session: %w", err)
 	}
@@ -337,12 +337,5 @@ func UpdateSessionCookies(sessionPath string, cookies map[string]string) error {
 	if err != nil {
 		return fmt.Errorf("encode session: %w", err)
 	}
-	tmp := sessionPath + ".tmp"
-	if err := os.WriteFile(tmp, append(updated, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write session: %w", err)
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		return fmt.Errorf("secure session: %w", err)
-	}
-	return fsretry.Rename(tmp, sessionPath)
+	return client.WriteSessionFile(sessionPath, append(updated, '\n'))
 }
