@@ -1,0 +1,39 @@
+# Weekly: merge upstream main into sync/upstream and open a PR, so upstream
+# changes land through the same CI gate as everything else.
+#
+# Needs the UPSTREAM_SYNC_TOKEN secret (fine-grained PAT on this repo with
+# Contents, Pull requests, and Workflows: read/write). GITHUB_TOKEN cannot
+# push upstream's workflow-file changes, and PRs it opens do not trigger CI.
+# Without the secret the job only reports drift. See docs/ci-cd.md.
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "23 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream and open PR
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          SYNC_MODE: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' && 'pr' || 'report' }}
+          UPSTREAM_REPO: MaxGhenis/openmessage
+          REPO: ${{ github.repository }}
+        run: scripts/ci/upstream-sync.sh

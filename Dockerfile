@@ -9,19 +9,23 @@
 # Pair:    docker exec -it <container> openmessage pair
 # Connect: claude mcp add -s user --transport sse openmessage http://<host>:7007/mcp/sse
 
-FROM golang:1.25-alpine AS build
+# Build on the host platform and cross-compile (the binary is pure Go), so
+# multi-arch images don't run the Go toolchain under QEMU emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/openmessage \
       .
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S openmessage && \
     adduser -S -G openmessage -h /home/openmessage openmessage && \
