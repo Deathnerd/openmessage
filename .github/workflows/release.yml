@@ -1,3 +1,8 @@
+# Release pipeline: tag on main -> CLI archives (incl. Windows), macOS
+# .app/.dmg, GHCR image -> GitHub Release with SHA256SUMS.
+#
+# Main is only reachable through the ruleset's required checks, so a tag on
+# main is a tag on green code; `verify` refuses anything else.
 name: Release
 
 on:
@@ -7,64 +12,95 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.2.0)'
+        description: 'Existing tag to (re)release, e.g. v0.3.0'
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # A dispatch runs on a branch, so github.ref_name would be the branch name;
+  # the input wins when present.
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GO_VERSION: ${{ vars.GO_VERSION || 'stable' }}
 
 jobs:
-  build-cross-platform:
-    name: Build CLI binaries
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tag is semver and on main
+        id: check
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH[-suffix]."
+            exit 1
+          fi
+          sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")" || {
+            echo "::error::Tag '$TAG' does not exist."
+            exit 1
+          }
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::Tag '$TAG' (${sha:0:12}) is not on main. Release only commits that passed the main ruleset."
+            exit 1
+          fi
+          prerelease=false
+          [[ "$TAG" =~ -(rc|alpha|beta) ]] && prerelease=true
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+
+  build-cli:
+    name: Build CLI archives
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      matrix:
-        include:
-          - goos: darwin
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: amd64
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: go.mod
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          version="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o dist/openmessage .
-          tar -C dist -czf "openmessage-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" openmessage
+      - name: Build and package every target
+        run: scripts/ci/cross-build.sh --package "$TAG"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: openmessage-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: openmessage-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          name: cli
+          path: dist/
           retention-days: 7
 
   build-macos-app:
     name: Build macOS .app + .dmg
+    needs: verify
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: go.mod
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       # Import the Developer ID Application certificate into a temporary
@@ -89,6 +125,7 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           # Make the new keychain the default search target so codesign sees it
+          # shellcheck disable=SC2046 # word-splitting the keychain list is intended
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
           # Import the cert and authorize codesign to use it without prompting
@@ -146,76 +183,89 @@ jobs:
             exit 0
           }
 
-      - name: Upload macOS app artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: OpenMessage-app
-          path: macos/build/OpenMessage.app
-          retention-days: 7
-
-      - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenMessage-dmg
+          name: dmg
           path: macos/build/OpenMessage.dmg
           retention-days: 7
 
+  container:
+    name: Publish container image
+    needs: [verify, build-cli, build-macos-app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # :latest only moves on full releases.
+          flavor: latest=${{ needs.verify.outputs.prerelease != 'true' }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.verify.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify.outputs.tag }},enable=${{ needs.verify.outputs.prerelease != 'true' }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ needs.verify.outputs.tag }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=container
+          provenance: mode=max
+          sbom: true
+
   release:
     name: Publish GitHub Release
-    needs: [build-cross-platform, build-macos-app]
+    needs: [verify, build-cli, build-macos-app]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Determine tag
-        id: tag
-        run: |
-          tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
 
       - name: Stage release files
         run: |
-          mkdir -p release
-          cp artifacts/openmessage-darwin-arm64/openmessage-darwin-arm64.tar.gz release/
-          cp artifacts/openmessage-darwin-amd64/openmessage-darwin-amd64.tar.gz release/
-          cp artifacts/openmessage-linux-arm64/openmessage-linux-arm64.tar.gz release/
-          cp artifacts/openmessage-linux-amd64/openmessage-linux-amd64.tar.gz release/
-          cp artifacts/OpenMessage-dmg/OpenMessage.dmg release/
-
-          # Generate SHA256 checksums for verification + Homebrew updates
-          (cd release && shasum -a 256 * > SHA256SUMS)
-
-      - name: Generate release notes
-        id: notes
-        run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          previous=$(git tag --sort=-v:refname | grep -v "^${tag}$" | head -n1)
-          if [ -z "$previous" ]; then
-            git log --pretty=format:"- %s (%h)" > NOTES.md
-          else
-            git log "${previous}..${tag}" --pretty=format:"- %s (%h)" > NOTES.md
-          fi
-          echo "Generated notes from ${previous:-beginning} to ${tag}"
+          mkdir release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' \) -exec cp {} release/ \;
+          # Checksums for verification + Homebrew/Scoop manifests.
+          (cd release && sha256sum -- * > SHA256SUMS)
+          cat release/SHA256SUMS
 
       - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" release/* --clobber
-            gh release edit "$tag" --notes-file NOTES.md
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$tag" \
-              --title "OpenMessage ${tag}" \
-              --notes-file NOTES.md \
-              release/*
+            gh release create "$TAG" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "OpenMessage ${TAG}" \
+              --generate-notes \
+              --verify-tag \
+              --prerelease="$PRERELEASE"
           fi

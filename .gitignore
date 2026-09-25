@@ -38,3 +38,6 @@ output/
 /cc.json
 /.tmp-*.sql
 .gitnexus
+
+# Release archives from scripts/ci/cross-build.sh --package
+/dist/

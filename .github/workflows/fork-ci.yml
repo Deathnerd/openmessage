@@ -1,0 +1,174 @@
+# Fork CI: the checks this fork adds on top of upstream's test.yml.
+#
+# Every job feeds "CI Gate", the one check the main ruleset requires from
+# this file (.github/rulesets/main.json). Add a job here, add it to the
+# gate's `needs`, and it becomes required with no settings change.
+#
+# Upstream-owned workflows (test.yml, gmessages-fork-drift.yml) are left
+# untouched so upstream syncs merge cleanly. See docs/ci-cd.md.
+name: Fork CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so new Go CVEs and toolchain drift surface without a PR.
+    - cron: "41 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Build and scan with the newest patched Go, not go.mod's minimum
+  # (go 1.25.0 ships known stdlib CVEs). Pin via the GO_VERSION repo variable.
+  GO_VERSION: ${{ vars.GO_VERSION || 'stable' }}
+  ACTIONLINT_VERSION: v1.7.12
+  GOVULNCHECK_VERSION: v1.8.0
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # check-gofmt.sh diffs against the merge-base
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt (changed files)
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: scripts/ci/check-gofmt.sh "$BASE"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy
+        run: scripts/ci/check-go-mod-tidy.sh
+
+      # actionlint shellchecks inline `run:` blocks; this covers the scripts.
+      - name: actionlint + shellcheck
+        run: |
+          go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}" -color
+          shellcheck scripts/ci/*.sh
+
+  windows:
+    name: Go Test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      # Keep LF endings so fixtures and golden files match the other platforms.
+      - name: Disable CRLF conversion
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        run: go build -o openmessage.exe .
+
+      - name: Test
+        run: go test ./...
+
+  cross-build:
+    name: Cross Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Compile every release target
+        run: scripts/ci/cross-build.sh
+
+  container:
+    name: Container Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: openmessage:ci
+          cache-from: type=gha,scope=container
+          cache-to: type=gha,scope=container,mode=max
+
+      # Same probe as docker-compose.yml's healthcheck: `serve` must come up
+      # and answer /api/status without pairing.
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke openmessage:ci
+          for _ in $(seq 30); do
+            if docker exec smoke wget -qO- http://localhost:7007/api/status >/dev/null 2>&1; then
+              echo "serve is healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs smoke
+          echo "::error::Container did not answer /api/status within 30s."
+          exit 1
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Reports only vulnerabilities reachable from our code.
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  gate:
+    name: CI Gate
+    if: always()
+    needs: [lint, windows, cross-build, container, govulncheck]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' >/dev/null
