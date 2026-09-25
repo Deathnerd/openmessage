@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -329,7 +330,8 @@ func validateExistingBlob(path string, expectedSize int64) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("hash path is not a regular file")
 	}
-	if info.Mode().Perm() != privateFileMode {
+	// Windows reports 0666 for every writable file; Unix mode bits don't apply.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != privateFileMode {
 		return fmt.Errorf("hash path mode is %04o, want %04o", info.Mode().Perm(), privateFileMode)
 	}
 	if info.Size() != expectedSize {
@@ -391,6 +393,10 @@ func copyCapped(ctx context.Context, dst io.Writer, src io.Reader, max int64) (i
 }
 
 func syncDir(path string) error {
+	// Windows cannot fsync a directory handle; NTFS journals the rename itself.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	dir, err := os.Open(path)
 	if err != nil {
 		return err

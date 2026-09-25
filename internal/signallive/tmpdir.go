@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -71,24 +72,41 @@ func newSignalRunTmpDir() (string, func(), error) {
 // signalCLIEnv rebases the subprocess's temp space onto dir. TMPDIR covers
 // signal-cli itself plus anything it spawns; java.io.tmpdir (appended last
 // to SIGNAL_CLI_OPTS so it wins) covers JVMs that derive their temp dir from
-// the platform default instead of TMPDIR.
+// the platform default instead of TMPDIR. TMP/TEMP are Windows' equivalents
+// (matched case-insensitively, as Windows treats env names).
 func signalCLIEnv(base []string, dir string) []string {
-	javaOpt := "-Djava.io.tmpdir=" + dir
+	javaOpt := javaTmpdirOption(runtime.GOOS, dir)
 	opts := javaOpt
-	env := make([]string, 0, len(base)+2)
+	env := make([]string, 0, len(base)+4)
 	for _, kv := range base {
+		key, value, _ := strings.Cut(kv, "=")
 		switch {
-		case strings.HasPrefix(kv, "TMPDIR="):
+		case key == "TMPDIR", strings.EqualFold(key, "TMP"), strings.EqualFold(key, "TEMP"):
 			continue
-		case strings.HasPrefix(kv, "SIGNAL_CLI_OPTS="):
-			if existing := strings.TrimSpace(strings.TrimPrefix(kv, "SIGNAL_CLI_OPTS=")); existing != "" {
+		case key == "SIGNAL_CLI_OPTS":
+			if existing := strings.TrimSpace(value); existing != "" {
 				opts = existing + " " + javaOpt
 			}
 			continue
 		}
 		env = append(env, kv)
 	}
-	return append(env, "TMPDIR="+dir, "SIGNAL_CLI_OPTS="+opts)
+	return append(env, "TMPDIR="+dir, "TMP="+dir, "TEMP="+dir, "SIGNAL_CLI_OPTS="+opts)
+}
+
+// javaTmpdirOption builds the -Djava.io.tmpdir flag for SIGNAL_CLI_OPTS.
+// signal-cli's Windows launcher (signal-cli.bat) expands %SIGNAL_CLI_OPTS%
+// unquoted into the java command line, so a temp path with a space (for
+// example C:\Users\John Doe\AppData\Local\Temp) would split into two
+// arguments and java would treat the second half as the main class. Quoting
+// the value keeps it one argument: the Windows argv parser strips the quotes.
+// Unix launchers word-split without quote removal, so they get it bare.
+func javaTmpdirOption(goos, dir string) string {
+	if goos == "windows" && strings.ContainsAny(dir, " \t") {
+		// A trailing backslash would escape the closing quote.
+		return `-Djava.io.tmpdir="` + strings.TrimRight(dir, `\`) + `"`
+	}
+	return "-Djava.io.tmpdir=" + dir
 }
 
 func signalTmpSweepDisabled() bool {

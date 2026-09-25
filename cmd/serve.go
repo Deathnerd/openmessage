@@ -126,8 +126,8 @@ func Version() string {
 }
 
 func RunServe(logger zerolog.Logger, args ...string) error {
-	previousUmask := syscall.Umask(0o077)
-	defer syscall.Umask(previousUmask)
+	restoreUmask := setPrivateUmask()
+	defer restoreUmask()
 
 	opts, err := parseServeOptions(args)
 	if err != nil {
@@ -273,6 +273,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		googleStartupCtx, cancelGoogleStartup := context.WithCancel(context.Background())
 		var googleStartupWG sync.WaitGroup
 		defer func() {
+			// The startup goroutine runs the backfill inline; BeginShutdown makes
+			// it stop at its next checkpoint instead of finishing a full sync.
+			a.BeginShutdown()
 			cancelGoogleStartup()
 			ctx, cancel := context.WithTimeout(context.Background(), googleSupervisorStopTimeout)
 			defer cancel()
@@ -771,10 +774,13 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		}()
 	}
 
-	// Block until signal
+	// Block until signal, or until a service manager asks us to stop.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	select {
+	case <-sigCh:
+	case <-serveStop:
+	}
 	logger.Info().Msg("Shutting down")
 	return nil
 }

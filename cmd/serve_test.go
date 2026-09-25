@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -313,8 +314,14 @@ func TestRefreshGoogleSessionCookiesSkipsWhenUnconfigured(t *testing.T) {
 func TestRefreshGoogleSessionCookiesUsesEnvScript(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "refresh.sh")
+	body := "#!/bin/sh\nprintf '%s' \"$*\" > \"$ARGS_PATH\"\n"
+	if runtime.GOOS == "windows" {
+		// Windows cannot run #! scripts; a batch file is the native stand-in.
+		script = filepath.Join(dir, "refresh.cmd")
+		body = "@echo off\r\n>\"%ARGS_PATH%\" echo %*\r\n"
+	}
 	argsPath := filepath.Join(dir, "args")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' \"$*\" > \"$ARGS_PATH\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
 	t.Setenv("OPENMESSAGE_COOKIE_REFRESH_SCRIPT", script)

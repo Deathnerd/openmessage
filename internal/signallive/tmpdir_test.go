@@ -58,7 +58,7 @@ func TestSignalCLIEnvAppendsToExistingOptsSoOursWins(t *testing.T) {
 }
 
 func TestNewSignalRunTmpDirCreatesAndCleansUp(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	setTestTempDir(t, t.TempDir())
 	dir, cleanup, err := newSignalRunTmpDir()
 	if err != nil {
 		t.Fatalf("newSignalRunTmpDir: %v", err)
@@ -76,7 +76,7 @@ func TestNewSignalRunTmpDirCreatesAndCleansUp(t *testing.T) {
 }
 
 func TestSweepSignalTmpRootRemovesOnlyStaleEntries(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	setTestTempDir(t, t.TempDir())
 	root := signalTmpRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestSweepSignalTmpRootRemovesOnlyStaleEntries(t *testing.T) {
 
 func TestSweepLegacyLibsignalTempFiltersByNameAndAge(t *testing.T) {
 	tempRoot := t.TempDir()
-	t.Setenv("TMPDIR", tempRoot)
+	setTestTempDir(t, tempRoot)
 
 	oldLeak := filepath.Join(tempRoot, "libsignal12345")
 	freshLeak := filepath.Join(tempRoot, "libsignal67890")
@@ -150,7 +150,7 @@ func TestSweepLegacyLibsignalTempFiltersByNameAndAge(t *testing.T) {
 
 func TestSweepRespectsOptOut(t *testing.T) {
 	tempRoot := t.TempDir()
-	t.Setenv("TMPDIR", tempRoot)
+	setTestTempDir(t, tempRoot)
 	t.Setenv(signalTmpSweepEnvVar, "0")
 
 	leak := filepath.Join(tempRoot, "libsignal-optout")
@@ -174,13 +174,11 @@ func TestSweepRespectsOptOut(t *testing.T) {
 // against a stub executable to prove the subprocess sees the confined
 // TMPDIR/SIGNAL_CLI_OPTS and that the per-run dir is removed afterwards.
 func TestRunSignalCLIConfinesTempAndCleansUp(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	setTestTempDir(t, t.TempDir())
 	configDir := t.TempDir()
-	stub := filepath.Join(t.TempDir(), "signal-cli-stub")
-	script := "#!/bin/sh\nprintf '%s|%s' \"$TMPDIR\" \"$SIGNAL_CLI_OPTS\"\nmkdir -p \"$TMPDIR/libsignal-test\"\n"
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	stub := writeSignalCLIStub(t,
+		"#!/bin/sh\nprintf '%s|%s' \"$TMPDIR\" \"$SIGNAL_CLI_OPTS\"\nmkdir -p \"$TMPDIR/libsignal-test\"\n",
+		"@echo off\r\n<nul set /p =\"%TMPDIR%|%SIGNAL_CLI_OPTS%\"\r\nmkdir \"%TMPDIR%\\libsignal-test\"\r\n")
 	t.Setenv("OPENMESSAGES_SIGNAL_CLI", stub)
 
 	out, err := runSignalCLI(context.Background(), configDir, "receive")
@@ -207,5 +205,22 @@ func TestRunSignalCLIConfinesTempAndCleansUp(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("tmp root should be empty after run, has %d entries", len(entries))
+	}
+}
+
+func TestJavaTmpdirOptionQuotesWindowsPathsWithSpaces(t *testing.T) {
+	for _, tc := range []struct {
+		name, goos, dir, want string
+	}{
+		{"windows with space", "windows", `C:\Users\John Doe\Temp\run-1`, `-Djava.io.tmpdir="C:\Users\John Doe\Temp\run-1"`},
+		{"windows trailing backslash", "windows", `C:\Users\John Doe\Temp\`, `-Djava.io.tmpdir="C:\Users\John Doe\Temp"`},
+		{"windows without space", "windows", `C:\Users\wes\Temp\run-1`, `-Djava.io.tmpdir=C:\Users\wes\Temp\run-1`},
+		{"unix with space stays bare", "linux", "/tmp/my dir/run-1", "-Djava.io.tmpdir=/tmp/my dir/run-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := javaTmpdirOption(tc.goos, tc.dir); got != tc.want {
+				t.Fatalf("javaTmpdirOption(%q, %q) = %q, want %q", tc.goos, tc.dir, got, tc.want)
+			}
+		})
 	}
 }

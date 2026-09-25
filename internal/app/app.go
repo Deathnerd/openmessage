@@ -137,9 +137,12 @@ type App struct {
 
 	// gmClient is used by backfill methods. If nil, it's derived from Client.GM.
 	// Set this field directly in tests to inject a mock.
-	gmClient                  GMClient
-	BackfillProgress          BackfillProgress
-	backfillRunning           atomic.Bool
+	gmClient         GMClient
+	BackfillProgress BackfillProgress
+	backfillRunning  atomic.Bool
+	// shuttingDown makes in-flight backfill/reconcile loops abort at their
+	// next client check so daemon shutdown does not wait out a full sync.
+	shuttingDown              atomic.Bool
 	reconcileRunning          atomic.Bool
 	avatarSyncMu              sync.Mutex
 	avatarSyncOnce            sync.Once
@@ -668,8 +671,14 @@ func (a *App) currentBackfillClient() (GMClient, any) {
 	return nil, nil
 }
 
+// BeginShutdown tells running backfill and reconcile loops to stop at their
+// next checkpoint. It is safe to call more than once.
+func (a *App) BeginShutdown() {
+	a.shuttingDown.Store(true)
+}
+
 func (a *App) backfillClientStillCurrent(token any) bool {
-	if token == nil {
+	if token == nil || a.shuttingDown.Load() {
 		return false
 	}
 	if a.gmClient != nil {
