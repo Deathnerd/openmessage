@@ -445,3 +445,22 @@ func TestConfigureServeEnvRestoresPreviousValue(t *testing.T) {
 		t.Fatalf("OPENMESSAGES_DEMO=%q, want existing after restore", got)
 	}
 }
+
+func TestLoadServeRemoteAccess(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENMESSAGES_ALLOWED_HOSTS", "om.example")
+	t.Setenv("OPENMESSAGES_CONTROL_TOKEN_FILE", tokenPath)
+
+	if remote, err := loadServeRemoteAccess(serveOptions{mcpSSE: true}); err != nil || remote == nil {
+		t.Fatalf("--mcp-sse: loadServeRemoteAccess() = %v, %v; want remote mode", remote, err)
+	}
+	if _, err := loadServeRemoteAccess(serveOptions{web: true, mcpSSE: true}); !errors.Is(err, errRemoteWebUI) {
+		t.Fatalf("with the web UI: error = %v, want errRemoteWebUI", err)
+	}
+	if remote, err := loadServeRemoteAccess(serveOptions{mcpStdio: true}); err != nil || remote != nil {
+		t.Fatalf("stdio only: loadServeRemoteAccess() = %v, %v; want local, no error", remote, err)
+	}
+}

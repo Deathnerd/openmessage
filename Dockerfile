@@ -8,6 +8,8 @@
 # Run:     docker run -p 7007:7007 -v openmessage-data:/data openmessage
 # Pair:    docker exec -it <container> openmessage pair
 # Connect: claude mcp add -s user --transport sse openmessage http://<host>:7007/mcp/sse
+# Shared server: set OPENMESSAGES_ALLOWED_HOSTS + OPENMESSAGES_CONTROL_TOKEN_FILE
+#   and run `serve --mcp-sse` (remote mode: bearer token required, MCP only).
 
 FROM golang:1.25-alpine AS build
 WORKDIR /src
@@ -26,6 +28,9 @@ RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S openmessage && \
     adduser -S -G openmessage -h /home/openmessage openmessage && \
     mkdir -p /data && chown openmessage:openmessage /data
+# The process writes only to /data and /tmp, so the root filesystem can be
+# read-only. Kubernetes may override the user (runAsUser/fsGroup); the uid
+# here is kept stable for existing Docker volumes.
 USER openmessage
 WORKDIR /home/openmessage
 COPY --from=build /out/openmessage /usr/local/bin/openmessage
