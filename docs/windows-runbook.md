@@ -369,6 +369,10 @@ logged. To authorize a browser, open the bootstrap URL from the latest
   texts and impersonate the paired web session. Its ACL should list only
   `wesgi`, `SYSTEM`, `Administrators`, and `NT SERVICE\OpenMessage`. Check
   with `icacls`.
+- **`daemon.log` contains a sign-in link.** Each service start writes a
+  single-use web UI bootstrap URL to the log. It stops working once opened,
+  and anyone who can read the log can already read `control.token` in the
+  same folder. Still, redact `t=...` before sharing log excerpts.
 - **Service identity.** `NT SERVICE\OpenMessage` is a virtual account. It has
   no password, can't log on interactively, and has only the rights explicitly
   granted, which is Modify on the data dir. Don't switch the service to
@@ -434,6 +438,11 @@ Commits on `windows-support`, on top of upstream `main`:
    - `serveStop` is the SCM's equivalent of SIGTERM.
    - `App.BeginShutdown` aborts backfill at its next checkpoint.
    - A 10 s bounded stop handles the libgm RPC hang.
+   - stderr (the bootstrap URL, Go crash traces) goes to `daemon.log`
+     instead of being discarded.
+5. **signal-cli quoting.** `-Djava.io.tmpdir` is quoted on Windows when the
+   temp path has a space, because `signal-cli.bat` expands
+   `%SIGNAL_CLI_OPTS%` unquoted.
 
 Verification: `go test ./...` passes on Windows (33 packages).
 `GOOS=linux` and `GOOS=darwin` `go vet ./...` pass.

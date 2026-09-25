@@ -5,10 +5,12 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -38,6 +40,13 @@ func RunService(_ zerolog.Logger, args ...string) error {
 		return err
 	}
 	defer logFile.Close()
+	// A service has no console, so stderr is discarded. Point it at the log:
+	// serve prints the web UI bootstrap URL there, and the Go runtime writes
+	// fatal panics through the process's STD_ERROR_HANDLE.
+	os.Stderr = logFile
+	if err := windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(logFile.Fd())); err != nil {
+		fmt.Fprintf(logFile, "redirect STD_ERROR_HANDLE: %v\n", err)
+	}
 	logger := serviceLogger(logFile)
 	logger.Info().Str("service", ServiceName).Strs("args", args).Msg("Service starting")
 	if err := svc.Run(ServiceName, &daemonService{logger: logger, args: args}); err != nil {
