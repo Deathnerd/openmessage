@@ -197,6 +197,11 @@ go test ./cmd/ -v      # Unit + integration tests
 go test ./... -v       # All tests
 ```
 
+CI/CD, branch protection (rulesets as code), releases and the weekly
+upstream sync are documented in [docs/ci-cd.md](docs/ci-cd.md). Fork-owned
+checks live in `fork-*.yml` and `scripts/ci/`; leave upstream's `test.yml`
+untouched so syncs merge cleanly.
+
 ## Relationship visualization (`generate_viz`)
 
 Generates a self-contained HTML file combining data dashboards with narrative chapters. Output is deployable to Vercel or viewable locally.

@@ -1,0 +1,20 @@
+# Keeps SHA-pinned actions current. Go and npm dependencies are deliberately
+# not managed here: upstream owns go.mod/package.json, and fork-side bumps
+# would make every upstream sync conflict in go.sum. They arrive via
+# the upstream sync PR instead; govulncheck in Fork CI flags anything urgent.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    # Upstream-owned workflows: leave them byte-identical to upstream so
+    # syncs merge cleanly. They're refreshed by the upstream sync PR.
+    exclude-paths:
+      - .github/workflows/test.yml
+      - .github/workflows/gmessages-fork-drift.yml
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
