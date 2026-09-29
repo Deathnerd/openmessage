@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/maxghenis/openmessage/internal/fsretry"
 )
@@ -33,7 +34,13 @@ func SaveSession(path string, data *SessionData) error {
 // are persisted every few minutes (see EventHandler.maybePersistRotatedCookies),
 // so an in-place rewrite would put a truncation window in front of the paired
 // auth several hundred times a day. Losing it costs a manual re-pair.
+//
+// Writes to one path are serialized in-process: on Windows a rename over a
+// file fails while another rename or reader holds it, so concurrent writers
+// would mostly be fighting each other. What remains (a reader against one
+// writer) clears within fsretry's budget.
 func WriteSessionFile(path string, b []byte) error {
+	defer lockSessionPath(path)()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create dir: %w", err)
@@ -71,6 +78,16 @@ func WriteSessionFile(path string, b []byte) error {
 		return fmt.Errorf("install session: %w", err)
 	}
 	return nil
+}
+
+// sessionWriteLocks holds one mutex per cleaned session path.
+var sessionWriteLocks sync.Map
+
+func lockSessionPath(path string) (unlock func()) {
+	lock, _ := sessionWriteLocks.LoadOrStore(filepath.Clean(path), &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // ReadSessionFile reads session.json, retrying briefly while a concurrent
