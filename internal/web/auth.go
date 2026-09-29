@@ -149,10 +149,8 @@ func (a *ControlAuth) Handler(next http.Handler) http.Handler {
 }
 
 func (a *ControlAuth) classify(r *http.Request) string {
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if auth != "" {
-		parts := strings.Fields(auth)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && secureEqual(parts[1], a.token) {
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		if token, ok := bearerToken(r); ok && secureEqual(token, a.token) {
 			return "bearer-ok"
 		}
 		return "invalid"
@@ -165,6 +163,16 @@ func (a *ControlAuth) classify(r *http.Request) string {
 		return "invalid"
 	}
 	return "missing"
+}
+
+// bearerToken returns the token from an "Authorization: Bearer <token>"
+// header; ok is false when the header is absent or malformed.
+func bearerToken(r *http.Request) (token string, ok bool) {
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return "", false
+	}
+	return parts[1], true
 }
 
 func secureEqual(got, want string) bool {

@@ -27,6 +27,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  pair [--google|--google-file path]       - Pair with your phone via QR or Google account cookies")
 		fmt.Fprintln(os.Stderr, "  serve [--demo] [--web|--no-web] [--mcp-sse|--no-mcp-sse] [--mcp-stdio] - Start explicit web/MCP transports")
 		fmt.Fprintln(os.Stderr, "  service [serve flags]                    - Windows only: run serve under the Service Control Manager")
+		fmt.Fprintln(os.Stderr, "  mcp-bridge --url <https://host/mcp> --token-file <path> - Relay stdio MCP to a remote OpenMessage server")
 		fmt.Fprintln(os.Stderr, "  demo                                     - Start a seeded fake-data UI with live transports disabled")
 		fmt.Fprintln(os.Stderr, "  backup [--to dir] [--json]               - Create a verified legacy migration backup and manifest")
 		fmt.Fprintln(os.Stderr, "  migrate [--check] [--from dir] [--to dir] [--json] - Transform the legacy store into a validated v2 store")
@@ -53,6 +54,8 @@ func main() {
 		err = cmd.RunServe(logger, os.Args[2:]...)
 	case "service":
 		err = cmd.RunService(os.Args[2:]...)
+	case "mcp-bridge":
+		err = cmd.RunMCPBridge(os.Args[2:]...)
 	case "demo":
 		err = cmd.RunDemo(logger)
 	case "backup":

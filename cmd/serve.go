@@ -61,7 +61,13 @@ type serveOptions struct {
 // process holding the same WhatsApp device credentials or signal-cli account
 // logs the real daemon out ("401: logged out from another device").
 func (o serveOptions) mcpClientShape() bool {
-	return o.mcpStdio && !o.web && !o.mcpSSE
+	return o.mcpStdio && !o.httpEnabled()
+}
+
+// httpEnabled reports whether serve opens an HTTP listener (web UI and/or MCP
+// over HTTP); remote mode applies only then.
+func (o serveOptions) httpEnabled() bool {
+	return o.web || o.mcpSSE
 }
 
 // transportsEnabled reports whether this process may start transport
@@ -130,6 +136,10 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	defer restoreUmask()
 
 	opts, err := parseServeOptions(args)
+	if err != nil {
+		return err
+	}
+	remote, err := loadServeRemoteAccess(opts)
 	if err != nil {
 		return err
 	}
@@ -618,7 +628,14 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 
 	var mcpHTTPHandler http.Handler
 	if opts.mcpSSE {
-		mcpHTTPHandler = newMCPHTTPHandler(mcpSrv, baseURL)
+		// Behind a remote-mode ingress the listen address is not the URL
+		// clients use; an empty base URL makes mcp-go advertise the legacy
+		// SSE message endpoint as a relative path.
+		mcpBaseURL := baseURL
+		if remote != nil {
+			mcpBaseURL = ""
+		}
+		mcpHTTPHandler = newMCPHTTPHandler(mcpSrv, mcpBaseURL)
 	}
 
 	googleStatus := func() any {
@@ -667,11 +684,16 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	v2Options := v2SendWebOptions(stack, v2Send)
 	v2IngestCounters := v2IngestCountersProvider(stack)
 
-	httpEnabled := opts.web || opts.mcpSSE
+	httpEnabled := opts.httpEnabled()
 	if httpEnabled {
-		controlAuth, err := web.NewControlAuth(a.DataDir, logger)
-		if err != nil {
-			return fmt.Errorf("initialize local control authentication: %w", err)
+		// Remote mode has its own required-token auth; the local control
+		// token (and its browser bootstrap) only exists in local mode.
+		var controlAuth *web.ControlAuth
+		if remote == nil {
+			controlAuth, err = web.NewControlAuth(a.DataDir, logger)
+			if err != nil {
+				return fmt.Errorf("initialize local control authentication: %w", err)
+			}
 		}
 		httpHandler := http.Handler(nil)
 		if opts.web {
@@ -721,6 +743,8 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				BackfillPhone:         a.BackfillConversationByPhone,
 				SyncGoogleContacts:    a.SyncGoogleContacts,
 			})
+		} else if remote != nil {
+			httpHandler = remote.Handler(mcpHTTPHandler)
 		} else {
 			httpHandler = web.ProtectLocalControl(controlAuth.Handler(mcpHTTPHandler))
 		}
@@ -740,7 +764,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				logger.Info().Str("addr", listenAddr).Msg("Web UI available at " + baseURL)
 				fmt.Fprintf(os.Stderr, "Open this single-use URL to authorize the web UI (it redirects without exposing the control token):\n%s\n", controlAuth.BootstrapURL(baseURL))
 			}
-			if opts.mcpSSE {
+			if remote != nil {
+				logger.Info().Str("addr", listenAddr).Msg("MCP available at /mcp (remote mode: bearer token required)")
+			} else if opts.mcpSSE {
 				logger.Info().Str("addr", listenAddr).Msg("MCP SSE available at " + baseURL + "/mcp/sse")
 			}
 			if err := srv.Serve(ln); err != nil {
@@ -783,6 +809,27 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	}
 	logger.Info().Msg("Shutting down")
 	return nil
+}
+
+// errRemoteWebUI rejects remote mode with --web: the web UI's login only
+// works on loopback.
+var errRemoteWebUI = errors.New("remote mode (OPENMESSAGES_ALLOWED_HOSTS) serves MCP only: run `serve --mcp-sse` without --web")
+
+// loadServeRemoteAccess reads remote mode from the environment when serve will
+// open an HTTP listener. A stdio-only serve (e.g. `kubectl exec ... serve
+// --mcp-stdio` in a remote-mode pod) listens nowhere, so it stays local.
+func loadServeRemoteAccess(opts serveOptions) (*web.RemoteAccess, error) {
+	if !opts.httpEnabled() {
+		return nil, nil
+	}
+	remote, err := web.LoadRemoteAccess(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	if remote != nil && opts.web {
+		return nil, errRemoteWebUI
+	}
+	return remote, nil
 }
 
 // clientProbeTimeout bounds the startup daemon probe in MCP client mode so a
